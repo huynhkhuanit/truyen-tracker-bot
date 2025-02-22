@@ -2,12 +2,10 @@ import asyncio
 import sqlite3
 import pandas as pd
 import sys
-import os
 from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackContext
 
-# Lấy TOKEN từ biến môi trường
-TOKEN = os.environ.get("TOKEN", "7809066941:AAHXcMWaYTKro2yXKjYvE9aPIn9I_cm8b_Q")
+TOKEN = "7809066941:AAHXcMWaYTKro2yXKjYvE9aPIn9I_cm8b_Q"
 
 # Kết nối database SQLite
 conn = sqlite3.connect("truyen.db", check_same_thread=False)
@@ -17,11 +15,9 @@ cursor = conn.cursor()
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS truyen (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    ten_truyen TEXT,
+    ten_truyen TEXT UNIQUE,
     so_chuong INTEGER DEFAULT 0,
-    ngay_doc TEXT,
-    UNIQUE(user_id, ten_truyen)
+    ngay_doc TEXT
 )
 """)
 conn.commit()
@@ -30,7 +26,7 @@ conn.commit()
 async def start(update: Update, context: CallbackContext) -> None:
     await update.message.reply_text("Xin chào! Hãy nhập tên truyện và số chương đã đọc theo format:\n\n/t tên_truyện số_chương")
 
-# Hàm thêm hoặc cập nhật truyện
+# Hàm thêm hoặc cập nhật truyện và tự động xuất Excel
 async def them_truyen(update: Update, context: CallbackContext) -> None:
     try:
         args = context.args
@@ -40,45 +36,35 @@ async def them_truyen(update: Update, context: CallbackContext) -> None:
 
         ten_truyen = " ".join(args[:-1])
         so_chuong = int(args[-1])
-        user_id = update.effective_user.id
 
-        cursor.execute("SELECT so_chuong FROM truyen WHERE user_id=? AND ten_truyen=?", (user_id, ten_truyen))
+        cursor.execute("SELECT so_chuong FROM truyen WHERE ten_truyen=?", (ten_truyen,))
         row = cursor.fetchone()
 
         if row:
-            so_chuong_moi = max(so_chuong, row[0])
-            cursor.execute("UPDATE truyen SET so_chuong=?, ngay_doc=date('now') WHERE user_id=? AND ten_truyen=?", 
-                           (so_chuong_moi, user_id, ten_truyen))
+            so_chuong_moi = max(so_chuong, row[0])  # Lấy số chương lớn nhất đã đọc
+            cursor.execute("UPDATE truyen SET so_chuong=?, ngay_doc=date('now') WHERE ten_truyen=?", (so_chuong_moi, ten_truyen))
             await update.message.reply_text(f"📖 Cập nhật: {ten_truyen} - {so_chuong_moi} chương")
         else:
-            cursor.execute("INSERT INTO truyen (user_id, ten_truyen, so_chuong, ngay_doc) VALUES (?, ?, ?, date('now'))", 
-                           (user_id, ten_truyen, so_chuong))
+            cursor.execute("INSERT INTO truyen (ten_truyen, so_chuong, ngay_doc) VALUES (?, ?, date('now'))", (ten_truyen, so_chuong))
             await update.message.reply_text(f"✅ Đã thêm truyện: {ten_truyen} - {so_chuong} chương")
 
         conn.commit()
 
-        # Tự động tạo file Excel tạm và gửi qua Telegram (không lưu trên server)
-        cursor.execute("SELECT * FROM truyen WHERE user_id=?", (user_id,))
+        # Tự động xuất dữ liệu ra file Excel
+        cursor.execute("SELECT * FROM truyen")
         rows = cursor.fetchall()
         
         if rows:
-            df = pd.DataFrame(rows, columns=["ID", "User ID", "Tên Truyện", "Số Chương", "Ngày Đọc"])
-            import tempfile
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
-                df.to_excel(tmp.name, index=False)
-                with open(tmp.name, "rb") as excel_file:
-                    await update.message.reply_document(document=excel_file, filename=f"TruyenDaDoc_{user_id}.xlsx")
-            import os
-            os.unlink(tmp.name)  # Xóa file tạm sau khi gửi
-            await update.message.reply_text("📋 Dữ liệu đã được tự động cập nhật và gửi qua file Excel.")
+            df = pd.DataFrame(rows, columns=["ID", "Tên Truyện", "Số Chương", "Ngày Đọc"])
+            df.to_excel("TruyenDaDoc.xlsx", index=False)
+            await update.message.reply_text("📋 Dữ liệu đã được tự động cập nhật vào file Excel 'TruyenDaDoc.xlsx'.")
 
     except ValueError:
         await update.message.reply_text("Vui lòng nhập số chương hợp lệ!")
 
 # Hàm liệt kê các truyện đã đọc
 async def danh_sach_truyen(update: Update, context: CallbackContext) -> None:
-    user_id = update.effective_user.id
-    cursor.execute("SELECT ten_truyen, so_chuong, ngay_doc FROM truyen WHERE user_id=?", (user_id,))
+    cursor.execute("SELECT ten_truyen, so_chuong, ngay_doc FROM truyen")
     data = cursor.fetchall()
     
     if not data:
@@ -88,41 +74,55 @@ async def danh_sach_truyen(update: Update, context: CallbackContext) -> None:
     reply_text = "\n".join([f"{row[0]} - {row[1]} chương (Cập nhật: {row[2]})" for row in data])
     await update.message.reply_text(reply_text)
 
-# Hàm xuất danh sách ra Excel (gửi qua Telegram)
+# Hàm xuất danh sách ra Excel (giữ lại cho trường hợp cần xuất thủ công)
 async def xuat_excel(update: Update, context: CallbackContext) -> None:
-    user_id = update.effective_user.id
-    cursor.execute("SELECT * FROM truyen WHERE user_id=?", (user_id,))
+    cursor.execute("SELECT * FROM truyen")
     rows = cursor.fetchall()
 
     if not rows:
         await update.message.reply_text("Không có dữ liệu để xuất!")
         return
 
-    df = pd.DataFrame(rows, columns=["ID", "User ID", "Tên Truyện", "Số Chương", "Ngày Đọc"])
-    import tempfile
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
-        df.to_excel(tmp.name, index=False)
-        with open(tmp.name, "rb") as excel_file:
-            await update.message.reply_document(document=excel_file, filename=f"TruyenDaDoc_{user_id}.xlsx")
-    import os
-    os.unlink(tmp.name)  # Xóa file tạm sau khi gửi
-    await update.message.reply_text("📄 File Excel đã được gửi cho bạn.")
+    df = pd.DataFrame(rows, columns=["ID", "Tên Truyện", "Số Chương", "Ngày Đọc"])
+    df.to_excel("TruyenDaDoc.xlsx", index=False)
 
-# Hàm chạy bot với webhooks (khuyến nghị cho Render)
+    await update.message.reply_document(document=open("TruyenDaDoc.xlsx", "rb"))
+    await update.message.reply_text("📄 File Excel 'TruyenDaDoc.xlsx' đã được xuất và gửi cho bạn.")
+
+# Hàm chạy bot
 async def main():
+    # Tạo ứng dụng
     app = Application.builder().token(TOKEN).build()
-    
+
     # Thêm các handler
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("t", them_truyen))
-    app.add_handler(CommandHandler("list", danh_sach_truyen))
-    app.add_handler(CommandHandler("export", xuat_excel))
+    app.add_handler(CommandHandler("t", them_truyen))  # Ghi truyện
+    app.add_handler(CommandHandler("list", danh_sach_truyen))  # Danh sách truyện
+    app.add_handler(CommandHandler("export", xuat_excel))  # Xuất file Excel
 
-    # Cấu hình webhook
-    await app.bot.set_webhook(url="https://<your-render-service>.onrender.com/")
-    await app.run_webhook(listen="0.0.0.0", port=10000)  # Port mặc định trên Render
+    print("Bot đang chạy...")
+    
+    # Khởi tạo ứng dụng
+    await app.initialize()
+    # Bắt đầu polling
+    await app.start()
+    await app.updater.start_polling()  # Chạy bot với polling
+    
+    # Giữ bot chạy cho đến khi bị dừng thủ công (Ctrl+C)
+    try:
+        await asyncio.Event().wait()  # Chờ vô thời hạn
+    except KeyboardInterrupt:
+        print("Bot đang dừng...")
+    
+    # Dừng bot một cách sạch sẽ
+    await app.updater.stop()
+    await app.stop()
+    await app.shutdown()
 
 if __name__ == "__main__":
+    # Cấu hình chính sách vòng lặp cho Windows nếu cần
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    
+    # Chạy ứng dụng
     asyncio.run(main())
