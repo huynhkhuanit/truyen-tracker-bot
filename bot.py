@@ -1,5 +1,5 @@
 import asyncio
-import psycopg2  # Sử dụng PostgreSQL để lưu dữ liệu lâu dài
+import sqlite3
 import pandas as pd
 import sys
 import os
@@ -9,18 +9,18 @@ from telegram.ext import Application, CommandHandler, CallbackContext
 # Lấy TOKEN từ biến môi trường
 TOKEN = os.environ.get("TOKEN", "7809066941:AAHXcMWaYTKro2yXKjYvE9aPIn9I_cm8b_Q")
 
-# Kết nối đến PostgreSQL (sử dụng ElephantSQL miễn phí)
-conn = psycopg2.connect(os.environ.get("DATABASE_URL"))
+# Kết nối database SQLite
+conn = sqlite3.connect("truyen.db", check_same_thread=False)
 cursor = conn.cursor()
 
 # Tạo bảng dữ liệu nếu chưa có
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS truyen (
-    id SERIAL PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
     ten_truyen TEXT,
     so_chuong INTEGER DEFAULT 0,
-    ngay_doc DATE DEFAULT CURRENT_DATE,
+    ngay_doc TEXT,
     UNIQUE(user_id, ten_truyen)
 )
 """)
@@ -42,23 +42,23 @@ async def them_truyen(update: Update, context: CallbackContext) -> None:
         so_chuong = int(args[-1])
         user_id = update.effective_user.id
 
-        cursor.execute("SELECT so_chuong FROM truyen WHERE user_id=%s AND ten_truyen=%s", (user_id, ten_truyen))
+        cursor.execute("SELECT so_chuong FROM truyen WHERE user_id=? AND ten_truyen=?", (user_id, ten_truyen))
         row = cursor.fetchone()
 
         if row:
             so_chuong_moi = max(so_chuong, row[0])
-            cursor.execute("UPDATE truyen SET so_chuong=%s, ngay_doc=CURRENT_DATE WHERE user_id=%s AND ten_truyen=%s", 
+            cursor.execute("UPDATE truyen SET so_chuong=?, ngay_doc=date('now') WHERE user_id=? AND ten_truyen=?", 
                            (so_chuong_moi, user_id, ten_truyen))
             await update.message.reply_text(f"📖 Cập nhật: {ten_truyen} - {so_chuong_moi} chương")
         else:
-            cursor.execute("INSERT INTO truyen (user_id, ten_truyen, so_chuong, ngay_doc) VALUES (%s, %s, %s, CURRENT_DATE)", 
+            cursor.execute("INSERT INTO truyen (user_id, ten_truyen, so_chuong, ngay_doc) VALUES (?, ?, ?, date('now'))", 
                            (user_id, ten_truyen, so_chuong))
             await update.message.reply_text(f"✅ Đã thêm truyện: {ten_truyen} - {so_chuong} chương")
 
         conn.commit()
 
-        # Tự động tạo file Excel tạm và gửi qua Telegram (không lưu trên Render)
-        cursor.execute("SELECT * FROM truyen WHERE user_id=%s", (user_id,))
+        # Tự động tạo file Excel tạm và gửi qua Telegram (không lưu trên server)
+        cursor.execute("SELECT * FROM truyen WHERE user_id=?", (user_id,))
         rows = cursor.fetchall()
         
         if rows:
@@ -78,7 +78,7 @@ async def them_truyen(update: Update, context: CallbackContext) -> None:
 # Hàm liệt kê các truyện đã đọc
 async def danh_sach_truyen(update: Update, context: CallbackContext) -> None:
     user_id = update.effective_user.id
-    cursor.execute("SELECT ten_truyen, so_chuong, ngay_doc FROM truyen WHERE user_id=%s", (user_id,))
+    cursor.execute("SELECT ten_truyen, so_chuong, ngay_doc FROM truyen WHERE user_id=?", (user_id,))
     data = cursor.fetchall()
     
     if not data:
@@ -91,7 +91,7 @@ async def danh_sach_truyen(update: Update, context: CallbackContext) -> None:
 # Hàm xuất danh sách ra Excel (gửi qua Telegram)
 async def xuat_excel(update: Update, context: CallbackContext) -> None:
     user_id = update.effective_user.id
-    cursor.execute("SELECT * FROM truyen WHERE user_id=%s", (user_id,))
+    cursor.execute("SELECT * FROM truyen WHERE user_id=?", (user_id,))
     rows = cursor.fetchall()
 
     if not rows:
@@ -108,7 +108,7 @@ async def xuat_excel(update: Update, context: CallbackContext) -> None:
     os.unlink(tmp.name)  # Xóa file tạm sau khi gửi
     await update.message.reply_text("📄 File Excel đã được gửi cho bạn.")
 
-# Hàm chạy bot với webhooks
+# Hàm chạy bot với webhooks (khuyến nghị cho Render)
 async def main():
     app = Application.builder().token(TOKEN).build()
     
