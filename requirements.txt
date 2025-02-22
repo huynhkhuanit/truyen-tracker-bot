@@ -1,3 +1,3 @@
-python-telegram-bot==13.7  # Hoặc phiên bản mới nhất bạn đang dùng
+python-telegram-bot==21.10  # Hoặc phiên bản mới nhất bạn đang dùng
 pandas
 openpyxl
